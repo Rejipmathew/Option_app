@@ -1,9 +1,6 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import numpy as np
-from scipy.stats import norm
-from datetime import datetime
 
 # Streamlit app details
 st.set_page_config(page_title="Financial Analysis", layout="wide")
@@ -13,7 +10,11 @@ with st.sidebar:
     st.title("Financial Analysis")
     ticker = st.text_input("Enter a stock ticker (e.g., AAPL)", "AAPL")
     period = st.selectbox("Enter a time frame", ("1D", "5D", "1M", "6M", "YTD", "1Y", "5Y"), index=2)
+
+    # Drop-down menu to select data type (Stock data or Options data)
     data_type = st.selectbox("Select Data Type", ["Stock Data", "Options Data"])
+
+    # Options selection if "Options Data" is selected
     show_options = data_type == "Options Data"
     option_type = st.selectbox("Select Option Type", ("Call", "Put"), index=0) if show_options else None
 
@@ -23,6 +24,7 @@ def safe_format(value, decimal_places=2):
         return f"{value:.{decimal_places}f}"
     return "N/A"
 
+# Format market cap and enterprise value into something readable
 def format_value(value):
     if isinstance(value, (int, float)):
         suffixes = ["", "K", "M", "B", "T"]
@@ -33,40 +35,21 @@ def format_value(value):
         return f"${value:.1f}{suffixes[suffix_index]}"
     return "N/A"
 
-# Enhanced function to fetch stock data
-def fetch_stock_data(ticker):
+# Fetch and display stock data
+def display_stock_data(ticker, period):
     try:
         stock = yf.Ticker(ticker)
         info = stock.info
-        return stock, info
-    except Exception as e:
-        st.error(f"Error fetching stock data: {e}")
-        return None, None
 
-# Fetch and display stock data with moving averages and error handling
-def display_stock_data(ticker, period):
-    stock, info = fetch_stock_data(ticker)
-    if stock is None or info is None:
-        st.error("Failed to fetch stock data. Please check the ticker symbol and try again.")
-        return
-
-    try:
+        # Fetch stock history based on selected period
         history = stock.history(period=period)
-        if history.empty:
-            st.warning("No historical data available for the selected period.")
-            return
 
-        history['SMA_50'] = history['Close'].rolling(window=50).mean()
-        history['EMA_20'] = history['Close'].ewm(span=20, adjust=False).mean()
+        st.line_chart(history["Close"])
 
-        st.line_chart(history[['Close', 'SMA_50', 'EMA_20']])
-
-        history['LogReturns'] = np.log(history['Close'] / history['Close'].shift(1))
-        hist_vol = history['LogReturns'].std() * np.sqrt(252)
-        st.write(f"**Historical Volatility**: {safe_format(hist_vol * 100)}%")
-
+        # Display stock information in columns
         col1, col2, col3 = st.columns(3)
 
+        # Stock information
         country = info.get('country', 'N/A')
         sector = info.get('sector', 'N/A')
         industry = info.get('industry', 'N/A')
@@ -87,9 +70,61 @@ def display_stock_data(ticker, period):
         col1.dataframe(df_info, width=400, hide_index=True)
 
     except Exception as e:
-        st.error(f"An error occurred while displaying stock data: {e}")
+        st.error(f"An error occurred: {e}")
+
+# Calculate Put/Call Ratio
+def calculate_put_call_ratio(ticker):
+    stock = yf.Ticker(ticker)
+    try:
+        expiration_dates = stock.options
+        total_calls = 0
+        total_puts = 0
+
+        for exp_date in expiration_dates:
+            option_chain = stock.option_chain(exp_date)
+            total_calls += option_chain.calls['volume'].sum()
+            total_puts += option_chain.puts['volume'].sum()
+
+        put_call_ratio = total_puts / total_calls if total_calls > 0 else None
+        return put_call_ratio
+    except Exception as e:
+        st.error(f"Error calculating Put/Call Ratio: {e}")
+        return None
+
+# Fetch and display options data
+def display_options_data(ticker, option_type):
+    try:
+        stock = yf.Ticker(ticker)
+        expiration_dates = stock.options
+        expiration_date = st.selectbox("Select an expiration date", expiration_dates)
+
+        if expiration_date:
+            options_chain = stock.option_chain(expiration_date)
+            options_data = options_chain.calls if option_type == "Call" else options_chain.puts
+
+            # Calculate Open Interest, and sort by volume
+            options_data['OI'] = options_data['openInterest']
+            options_data = options_data.sort_values(by="volume", ascending=False)
+
+            # Display the top options with the highest volume
+            st.write(f"**{option_type}s for {expiration_date} - Top Options by Volume**")
+            st.dataframe(options_data[['contractSymbol', 'strike', 'lastPrice', 'volume', 'impliedVolatility', 'OI']], height=400)
+
+            if not options_data.empty:
+                highest_option = options_data.iloc[0]
+                st.write(f"**Highest Volume {option_type} Option**: {highest_option['contractSymbol']} - Volume: {highest_option['volume']}")
+
+            # Calculate and display the Put/Call Ratio
+            put_call_ratio = calculate_put_call_ratio(ticker)
+            if put_call_ratio is not None:
+                st.write(f"**Put/Call Ratio**: {safe_format(put_call_ratio)}")
+
+    except Exception as e:
+        st.error(f"An error occurred while fetching options data: {e}")
 
 # Display data based on the selected type
 if ticker.strip():
     if data_type == "Stock Data":
         display_stock_data(ticker, period)
+    elif data_type == "Options Data" and show_options:
+        display_options_data(ticker, option_type)
