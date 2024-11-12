@@ -1,6 +1,7 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import numpy as np
 
 # Streamlit app details
 st.set_page_config(page_title="Financial Analysis", layout="wide")
@@ -10,7 +11,7 @@ with st.sidebar:
     st.title("Financial Analysis")
     ticker = st.text_input("Enter a stock ticker (e.g., AAPL)", "AAPL")
     period = st.selectbox("Enter a time frame", ("1D", "5D", "1M", "6M", "YTD", "1Y", "5Y"), index=2)
-    
+
     # Drop-down menu to select data type (Stock data or Options data)
     data_type = st.selectbox("Select Data Type", ["Stock Data", "Options Data"])
 
@@ -18,112 +19,104 @@ with st.sidebar:
     show_options = data_type == "Options Data"
     option_type = st.selectbox("Select Option Type", ("Call", "Put"), index=0) if show_options else None
 
-# Helper function to safely format numerical values
-def safe_format(value, decimal_places=2):
-    if isinstance(value, (int, float)):
-        return f"{value:.{decimal_places}f}"
-    return "N/A"
+    # Technical indicators
+    st.header("Select Technical Indicators")
+    show_bollinger = st.checkbox("Bollinger Bands")
+    show_put_call_ratio = st.checkbox("Put/Call Ratio")
+    show_imi = st.checkbox("Intraday Momentum Index (IMI)")
+    show_mfi = st.checkbox("Money Flow Index (MFI)")
+    show_open_interest = st.checkbox("Open Interest")
 
-# Format market cap and enterprise value into something readable
-def format_value(value):
-    if isinstance(value, (int, float)):
-        suffixes = ["", "K", "M", "B", "T"]
-        suffix_index = 0
-        while value >= 1000 and suffix_index < len(suffixes) - 1:
-            value /= 1000
-            suffix_index += 1
-        return f"${value:.1f}{suffixes[suffix_index]}"
-    return "N/A"
+# Helper functions for technical indicators
+def calculate_bollinger_bands(data):
+    """Calculate Bollinger Bands."""
+    data['20_SMA'] = data['Close'].rolling(window=20).mean()
+    data['Upper_Band'] = data['20_SMA'] + (data['Close'].rolling(window=20).std() * 2)
+    data['Lower_Band'] = data['20_SMA'] - (data['Close'].rolling(window=20).std() * 2)
+    return data
 
-# Fetch and display stock data
+def calculate_put_call_ratio(stock):
+    """Calculate Put/Call Ratio using options data."""
+    expiration_dates = stock.options
+    put_volumes, call_volumes = [], []
+    
+    for date in expiration_dates:
+        options_chain = stock.option_chain(date)
+        call_volumes.append(options_chain.calls['volume'].sum())
+        put_volumes.append(options_chain.puts['volume'].sum())
+    
+    total_calls = sum(call_volumes)
+    total_puts = sum(put_volumes)
+    
+    return total_puts / total_calls if total_calls > 0 else None
+
+def calculate_imi(data):
+    """Calculate Intraday Momentum Index (IMI)."""
+    up_move = (data['Close'] > data['Open']).astype(int)
+    down_move = (data['Close'] < data['Open']).astype(int)
+    gains = (data['Close'] - data['Open']) * up_move
+    losses = (data['Open'] - data['Close']) * down_move
+    imi = (gains.rolling(window=14).sum() / (gains.rolling(window=14).sum() + losses.rolling(window=14).sum())) * 100
+    data['IMI'] = imi
+    return data
+
+def calculate_mfi(data):
+    """Calculate Money Flow Index (MFI)."""
+    typical_price = (data['High'] + data['Low'] + data['Close']) / 3
+    money_flow = typical_price * data['Volume']
+    positive_flow = money_flow.where(data['Close'] > data['Close'].shift(1), 0)
+    negative_flow = money_flow.where(data['Close'] < data['Close'].shift(1), 0)
+    
+    mfi = 100 * (positive_flow.rolling(window=14).sum() /
+                 (positive_flow.rolling(window=14).sum() + negative_flow.rolling(window=14).sum()))
+    data['MFI'] = mfi
+    return data
+
+# Fetch and display stock data with indicators
 def display_stock_data(ticker, period):
     try:
         stock = yf.Ticker(ticker)
-        info = stock.info
-
-        # Fetch stock history based on selected period
-        if period == "1D":
-            history = stock.history(period="1d", interval="1h")
-        elif period == "5D":
-            history = stock.history(period="5d", interval="1d")
-        elif period == "1M":
-            history = stock.history(period="1mo", interval="1d")
-        elif period == "6M":
-            history = stock.history(period="6mo", interval="1wk")
-        elif period == "YTD":
-            history = stock.history(period="ytd", interval="1mo")
-        elif period == "1Y":
-            history = stock.history(period="1y", interval="1mo")
-        elif period == "5Y":
-            history = stock.history(period="5y", interval="3mo")
-
-        st.line_chart(history["Close"])
-
-        # Display stock information in columns
-        col1, col2, col3 = st.columns(3)
-
-        # Stock information
-        country = info.get('country', 'N/A')
-        sector = info.get('sector', 'N/A')
-        industry = info.get('industry', 'N/A')
-        market_cap = format_value(info.get('marketCap', 'N/A'))
-        ent_value = format_value(info.get('enterpriseValue', 'N/A'))
-        employees = info.get('fullTimeEmployees', 'N/A')
-
-        stock_info = [
-            ("Stock Info", "Value"),
-            ("Country", country),
-            ("Sector", sector),
-            ("Industry", industry),
-            ("Market Cap", market_cap),
-            ("Enterprise Value", ent_value),
-            ("Employees", employees)
-        ]
-        df_info = pd.DataFrame(stock_info[1:], columns=stock_info[0])
-        col1.dataframe(df_info, width=400, hide_index=True)
-
-        # Price information
-        current_price = safe_format(info.get('currentPrice'))
-        prev_close = safe_format(info.get('previousClose'))
-        day_high = safe_format(info.get('dayHigh'))
-        day_low = safe_format(info.get('dayLow'))
-        ft_week_high = safe_format(info.get('fiftyTwoWeekHigh'))
-        ft_week_low = safe_format(info.get('fiftyTwoWeekLow'))
-
-        price_info = [
-            ("Price Info", "Value"),
-            ("Current Price", f"${current_price}"),
-            ("Previous Close", f"${prev_close}"),
-            ("Day High", f"${day_high}"),
-            ("Day Low", f"${day_low}"),
-            ("52 Week High", f"${ft_week_high}"),
-            ("52 Week Low", f"${ft_week_low}")
-        ]
-        df_price = pd.DataFrame(price_info[1:], columns=price_info[0])
-        col2.dataframe(df_price, width=400, hide_index=True)
-
+        history = stock.history(period=period)
+        
+        if show_bollinger:
+            history = calculate_bollinger_bands(history)
+            st.line_chart(history[['Close', 'Upper_Band', 'Lower_Band']])
+        
+        if show_imi:
+            history = calculate_imi(history)
+            st.line_chart(history['IMI'], title="Intraday Momentum Index (IMI)")
+        
+        if show_mfi:
+            history = calculate_mfi(history)
+            st.line_chart(history['MFI'], title="Money Flow Index (MFI)")
+        
+        st.write("**Stock Data**")
+        st.dataframe(history[['Open', 'High', 'Low', 'Close', 'Volume']])
+    
     except Exception as e:
         st.error(f"An error occurred: {e}")
 
-# Fetch and display options data
+# Fetch and display options data with indicators
 def display_options_data(ticker, option_type):
     try:
         stock = yf.Ticker(ticker)
         expiration_dates = stock.options
         expiration_date = st.selectbox("Select an expiration date", expiration_dates)
-
+        
         if expiration_date:
             options_chain = stock.option_chain(expiration_date)
             options_data = options_chain.calls if option_type == "Call" else options_chain.puts
-            options_data = options_data.sort_values(by="volume", ascending=False)
+            st.dataframe(options_data[['contractSymbol', 'strike', 'lastPrice', 'volume', 'openInterest']])
 
-            st.write(f"**{option_type}s for {expiration_date}**")
-            st.dataframe(options_data[['contractSymbol', 'strike', 'lastPrice', 'volume']])
-
-            if not options_data.empty:
-                highest_option = options_data.iloc[0]
-                st.write(f"**Highest Volume {option_type} Option**: {highest_option['contractSymbol']} - Volume: {highest_option['volume']}")
-
+            # Calculate Put/Call Ratio
+            if show_put_call_ratio:
+                put_call_ratio = calculate_put_call_ratio(stock)
+                st.write(f"**Put/Call Ratio**: {put_call_ratio:.2f}" if put_call_ratio else "N/A")
+            
+            if show_open_interest:
+                st.write(f"**Open Interest for {option_type} Options**")
+                st.dataframe(options_data[['contractSymbol', 'openInterest']])
+    
     except Exception as e:
         st.error(f"An error occurred while fetching options data: {e}")
 
