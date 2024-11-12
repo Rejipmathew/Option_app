@@ -4,5 +4,5 @@ pandas==2.2.3
 ta
 matplotlib
 numpy
-scipy.stats 
+scipy==1.14.1
 datetime
