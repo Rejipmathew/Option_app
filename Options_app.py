@@ -1,6 +1,9 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import numpy as np
+from scipy.stats import norm
+from datetime import datetime
 
 # Streamlit app details
 st.set_page_config(page_title="Financial Analysis", layout="wide")
@@ -35,21 +38,27 @@ def format_value(value):
         return f"${value:.1f}{suffixes[suffix_index]}"
     return "N/A"
 
-# Fetch and display stock data
+# Fetch and display stock data with moving averages
 def display_stock_data(ticker, period):
     try:
         stock = yf.Ticker(ticker)
         info = stock.info
 
-        # Fetch stock history based on selected period
+        # Fetch stock history
         history = stock.history(period=period)
+        history['SMA_50'] = history['Close'].rolling(window=50).mean()
+        history['EMA_20'] = history['Close'].ewm(span=20, adjust=False).mean()
 
-        st.line_chart(history["Close"])
+        st.line_chart(history[['Close', 'SMA_50', 'EMA_20']])
+
+        # Historical Volatility Calculation
+        history['LogReturns'] = np.log(history['Close'] / history['Close'].shift(1))
+        hist_vol = history['LogReturns'].std() * np.sqrt(252)  # Annualized
+        st.write(f"**Historical Volatility**: {safe_format(hist_vol * 100)}%")
 
         # Display stock information in columns
         col1, col2, col3 = st.columns(3)
 
-        # Stock information
         country = info.get('country', 'N/A')
         sector = info.get('sector', 'N/A')
         industry = info.get('industry', 'N/A')
@@ -72,24 +81,15 @@ def display_stock_data(ticker, period):
     except Exception as e:
         st.error(f"An error occurred: {e}")
 
-# Calculate Put/Call Ratio
-def calculate_put_call_ratio(ticker):
-    stock = yf.Ticker(ticker)
-    try:
-        expiration_dates = stock.options
-        total_calls = 0
-        total_puts = 0
-
-        for exp_date in expiration_dates:
-            option_chain = stock.option_chain(exp_date)
-            total_calls += option_chain.calls['volume'].sum()
-            total_puts += option_chain.puts['volume'].sum()
-
-        put_call_ratio = total_puts / total_calls if total_calls > 0 else None
-        return put_call_ratio
-    except Exception as e:
-        st.error(f"Error calculating Put/Call Ratio: {e}")
-        return None
+# Black-Scholes Model for Greeks calculation
+def calculate_greeks(S, K, T, r, sigma, option_type):
+    d1 = (np.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
+    d2 = d1 - sigma * np.sqrt(T)
+    delta = norm.cdf(d1) if option_type == "Call" else -norm.cdf(-d1)
+    gamma = norm.pdf(d1) / (S * sigma * np.sqrt(T))
+    vega = S * norm.pdf(d1) * np.sqrt(T)
+    theta = -(S * norm.pdf(d1) * sigma) / (2 * np.sqrt(T))
+    return delta, gamma, vega, theta
 
 # Fetch and display options data
 def display_options_data(ticker, option_type):
@@ -102,22 +102,17 @@ def display_options_data(ticker, option_type):
             options_chain = stock.option_chain(expiration_date)
             options_data = options_chain.calls if option_type == "Call" else options_chain.puts
 
-            # Calculate Open Interest, and sort by volume
-            options_data['OI'] = options_data['openInterest']
-            options_data = options_data.sort_values(by="volume", ascending=False)
+            # Calculate Greeks
+            r = 0.05  # Assume a constant risk-free rate
+            S = stock.history(period='1d')['Close'].iloc[-1]
+            T = (datetime.strptime(expiration_date, "%Y-%m-%d") - datetime.now()).days / 365
 
-            # Display the top options with the highest volume
+            options_data['Delta'], options_data['Gamma'], options_data['Vega'], options_data['Theta'] = zip(
+                *options_data.apply(lambda x: calculate_greeks(
+                    S, x['strike'], T, r, x['impliedVolatility'], option_type), axis=1))
+
             st.write(f"**{option_type}s for {expiration_date} - Top Options by Volume**")
-            st.dataframe(options_data[['contractSymbol', 'strike', 'lastPrice', 'volume', 'impliedVolatility', 'OI']], height=400)
-
-            if not options_data.empty:
-                highest_option = options_data.iloc[0]
-                st.write(f"**Highest Volume {option_type} Option**: {highest_option['contractSymbol']} - Volume: {highest_option['volume']}")
-
-            # Calculate and display the Put/Call Ratio
-            put_call_ratio = calculate_put_call_ratio(ticker)
-            if put_call_ratio is not None:
-                st.write(f"**Put/Call Ratio**: {safe_format(put_call_ratio)}")
+            st.dataframe(options_data[['contractSymbol', 'strike', 'lastPrice', 'volume', 'impliedVolatility', 'Delta', 'Gamma', 'Vega', 'Theta']], height=400)
 
     except Exception as e:
         st.error(f"An error occurred while fetching options data: {e}")
