@@ -1,6 +1,7 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import numpy as np
 
 # Streamlit app details
 st.set_page_config(page_title="Financial Analysis", layout="wide")
@@ -35,6 +36,19 @@ def format_value(value):
         return f"${value:.1f}{suffixes[suffix_index]}"
     return "N/A"
 
+# Calculate Intraday Momentum Index (IMI)
+def calculate_imi(df):
+    df['change'] = df['Close'] - df['Open']
+    up_days = df['change'].apply(lambda x: x if x > 0 else 0)
+    abs_change = abs(df['change'])
+    imi = (up_days.rolling(window=14).sum() / abs_change.rolling(window=14).sum()) * 100
+    return imi
+
+# Calculate Intraday Momentum Formula (IMF)
+def calculate_imf(df):
+    df['imf'] = (df['Close'] - df['Open']) / (df['High'] - df['Low'])
+    return df['imf']
+
 # Fetch and display stock data
 def display_stock_data(ticker, period):
     try:
@@ -43,11 +57,19 @@ def display_stock_data(ticker, period):
 
         # Fetch stock history based on selected period
         history = stock.history(period=period)
+        if history.empty:
+            st.error("No historical data available for the selected ticker and period.")
+            return
 
-        st.line_chart(history["Close"])
+        # Calculate IMI and IMF
+        history['IMI'] = calculate_imi(history)
+        history['IMF'] = calculate_imf(history)
+
+        # Display line charts
+        st.line_chart(history[['Close', 'IMI', 'IMF']])
 
         # Display stock information in columns
-        col1, col2, col3 = st.columns(3)
+        col1, col2 = st.columns(2)
 
         # Stock information
         country = info.get('country', 'N/A')
@@ -69,27 +91,15 @@ def display_stock_data(ticker, period):
         df_info = pd.DataFrame(stock_info[1:], columns=stock_info[0])
         col1.dataframe(df_info, width=400, hide_index=True)
 
+        # Display IMI and IMF data
+        col2.subheader("Indicators")
+        latest_imi = safe_format(history['IMI'].iloc[-1])
+        latest_imf = safe_format(history['IMF'].iloc[-1])
+        col2.write(f"**Latest IMI**: {latest_imi}")
+        col2.write(f"**Latest IMF**: {latest_imf}")
+
     except Exception as e:
         st.error(f"An error occurred: {e}")
-
-# Calculate Put/Call Ratio
-def calculate_put_call_ratio(ticker):
-    stock = yf.Ticker(ticker)
-    try:
-        expiration_dates = stock.options
-        total_calls = 0
-        total_puts = 0
-
-        for exp_date in expiration_dates:
-            option_chain = stock.option_chain(exp_date)
-            total_calls += option_chain.calls['volume'].sum()
-            total_puts += option_chain.puts['volume'].sum()
-
-        put_call_ratio = total_puts / total_calls if total_calls > 0 else None
-        return put_call_ratio
-    except Exception as e:
-        st.error(f"Error calculating Put/Call Ratio: {e}")
-        return None
 
 # Fetch and display options data
 def display_options_data(ticker, option_type):
@@ -109,15 +119,6 @@ def display_options_data(ticker, option_type):
             # Display the top options with the highest volume
             st.write(f"**{option_type}s for {expiration_date} - Top Options by Volume**")
             st.dataframe(options_data[['contractSymbol', 'strike', 'lastPrice', 'volume', 'impliedVolatility', 'OI']], height=400)
-
-            if not options_data.empty:
-                highest_option = options_data.iloc[0]
-                st.write(f"**Highest Volume {option_type} Option**: {highest_option['contractSymbol']} - Volume: {highest_option['volume']}")
-
-            # Calculate and display the Put/Call Ratio
-            put_call_ratio = calculate_put_call_ratio(ticker)
-            if put_call_ratio is not None:
-                st.write(f"**Put/Call Ratio**: {safe_format(put_call_ratio)}")
 
     except Exception as e:
         st.error(f"An error occurred while fetching options data: {e}")
