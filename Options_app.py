@@ -13,11 +13,7 @@ with st.sidebar:
     st.title("Financial Analysis")
     ticker = st.text_input("Enter a stock ticker (e.g., AAPL)", "AAPL")
     period = st.selectbox("Enter a time frame", ("1D", "5D", "1M", "6M", "YTD", "1Y", "5Y"), index=2)
-
-    # Drop-down menu to select data type (Stock data or Options data)
     data_type = st.selectbox("Select Data Type", ["Stock Data", "Options Data"])
-
-    # Options selection if "Options Data" is selected
     show_options = data_type == "Options Data"
     option_type = st.selectbox("Select Option Type", ("Call", "Put"), index=0) if show_options else None
 
@@ -27,7 +23,6 @@ def safe_format(value, decimal_places=2):
         return f"{value:.{decimal_places}f}"
     return "N/A"
 
-# Format market cap and enterprise value into something readable
 def format_value(value):
     if isinstance(value, (int, float)):
         suffixes = ["", "K", "M", "B", "T"]
@@ -38,25 +33,38 @@ def format_value(value):
         return f"${value:.1f}{suffixes[suffix_index]}"
     return "N/A"
 
-# Fetch and display stock data with moving averages
-def display_stock_data(ticker, period):
+# Enhanced function to fetch stock data
+def fetch_stock_data(ticker):
     try:
         stock = yf.Ticker(ticker)
         info = stock.info
+        return stock, info
+    except Exception as e:
+        st.error(f"Error fetching stock data: {e}")
+        return None, None
 
-        # Fetch stock history
+# Fetch and display stock data with moving averages and error handling
+def display_stock_data(ticker, period):
+    stock, info = fetch_stock_data(ticker)
+    if stock is None or info is None:
+        st.error("Failed to fetch stock data. Please check the ticker symbol and try again.")
+        return
+
+    try:
         history = stock.history(period=period)
+        if history.empty:
+            st.warning("No historical data available for the selected period.")
+            return
+
         history['SMA_50'] = history['Close'].rolling(window=50).mean()
         history['EMA_20'] = history['Close'].ewm(span=20, adjust=False).mean()
 
         st.line_chart(history[['Close', 'SMA_50', 'EMA_20']])
 
-        # Historical Volatility Calculation
         history['LogReturns'] = np.log(history['Close'] / history['Close'].shift(1))
-        hist_vol = history['LogReturns'].std() * np.sqrt(252)  # Annualized
+        hist_vol = history['LogReturns'].std() * np.sqrt(252)
         st.write(f"**Historical Volatility**: {safe_format(hist_vol * 100)}%")
 
-        # Display stock information in columns
         col1, col2, col3 = st.columns(3)
 
         country = info.get('country', 'N/A')
@@ -79,47 +87,9 @@ def display_stock_data(ticker, period):
         col1.dataframe(df_info, width=400, hide_index=True)
 
     except Exception as e:
-        st.error(f"An error occurred: {e}")
-
-# Black-Scholes Model for Greeks calculation
-def calculate_greeks(S, K, T, r, sigma, option_type):
-    d1 = (np.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
-    d2 = d1 - sigma * np.sqrt(T)
-    delta = norm.cdf(d1) if option_type == "Call" else -norm.cdf(-d1)
-    gamma = norm.pdf(d1) / (S * sigma * np.sqrt(T))
-    vega = S * norm.pdf(d1) * np.sqrt(T)
-    theta = -(S * norm.pdf(d1) * sigma) / (2 * np.sqrt(T))
-    return delta, gamma, vega, theta
-
-# Fetch and display options data
-def display_options_data(ticker, option_type):
-    try:
-        stock = yf.Ticker(ticker)
-        expiration_dates = stock.options
-        expiration_date = st.selectbox("Select an expiration date", expiration_dates)
-
-        if expiration_date:
-            options_chain = stock.option_chain(expiration_date)
-            options_data = options_chain.calls if option_type == "Call" else options_chain.puts
-
-            # Calculate Greeks
-            r = 0.05  # Assume a constant risk-free rate
-            S = stock.history(period='1d')['Close'].iloc[-1]
-            T = (datetime.strptime(expiration_date, "%Y-%m-%d") - datetime.now()).days / 365
-
-            options_data['Delta'], options_data['Gamma'], options_data['Vega'], options_data['Theta'] = zip(
-                *options_data.apply(lambda x: calculate_greeks(
-                    S, x['strike'], T, r, x['impliedVolatility'], option_type), axis=1))
-
-            st.write(f"**{option_type}s for {expiration_date} - Top Options by Volume**")
-            st.dataframe(options_data[['contractSymbol', 'strike', 'lastPrice', 'volume', 'impliedVolatility', 'Delta', 'Gamma', 'Vega', 'Theta']], height=400)
-
-    except Exception as e:
-        st.error(f"An error occurred while fetching options data: {e}")
+        st.error(f"An error occurred while displaying stock data: {e}")
 
 # Display data based on the selected type
 if ticker.strip():
     if data_type == "Stock Data":
         display_stock_data(ticker, period)
-    elif data_type == "Options Data" and show_options:
-        display_options_data(ticker, option_type)
